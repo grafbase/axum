@@ -161,9 +161,17 @@ impl<M, S> Serve<M, S> {
     where
         F: Future<Output = ()> + Send + 'static,
     {
+        let Self {
+            tcp_listener,
+            make_service,
+            builder_map_fn,
+            _marker,
+        } = self;
+
         WithGracefulShutdown {
-            tcp_listener: self.tcp_listener,
-            make_service: self.make_service,
+            tcp_listener,
+            make_service,
+            builder_map_fn,
             signal,
             _marker: PhantomData,
         }
@@ -220,6 +228,7 @@ where
 pub struct WithGracefulShutdown<M, S, F> {
     tcp_listener: TcpListener,
     make_service: M,
+    builder_map_fn: Box<dyn Fn(Builder<TokioExecutor>) -> Builder<TokioExecutor> + Send + 'static>,
     signal: F,
     _marker: PhantomData<S>,
 }
@@ -236,6 +245,7 @@ where
             tcp_listener,
             make_service,
             signal,
+            builder_map_fn: _,
             _marker: _,
         } = self;
 
@@ -264,6 +274,7 @@ where
             tcp_listener,
             mut make_service,
             signal,
+            builder_map_fn,
             _marker: _,
         } = self;
 
@@ -314,32 +325,36 @@ where
 
                 let close_rx = close_rx.clone();
 
-                tokio::spawn(async move {
-                    let builder = Builder::new(TokioExecutor::new());
-                    let conn = builder.serve_connection_with_upgrades(tcp_stream, hyper_service);
-                    pin_mut!(conn);
+                tokio::spawn({
+                    let builder = builder_map_fn(Builder::new(TokioExecutor::new()));
 
-                    let signal_closed = signal_tx.closed().fuse();
-                    pin_mut!(signal_closed);
+                    async move {
+                        let conn =
+                            builder.serve_connection_with_upgrades(tcp_stream, hyper_service);
+                        pin_mut!(conn);
 
-                    loop {
-                        tokio::select! {
-                            result = conn.as_mut() => {
-                                if let Err(_err) = result {
-                                    trace!("failed to serve connection: {_err:#}");
+                        let signal_closed = signal_tx.closed().fuse();
+                        pin_mut!(signal_closed);
+
+                        loop {
+                            tokio::select! {
+                                result = conn.as_mut() => {
+                                    if let Err(_err) = result {
+                                        trace!("failed to serve connection: {_err:#}");
+                                    }
+                                    break;
                                 }
-                                break;
-                            }
-                            _ = &mut signal_closed => {
-                                trace!("signal received in task, starting graceful shutdown");
-                                conn.as_mut().graceful_shutdown();
+                                _ = &mut signal_closed => {
+                                    trace!("signal received in task, starting graceful shutdown");
+                                    conn.as_mut().graceful_shutdown();
+                                }
                             }
                         }
+
+                        trace!("connection {remote_addr} closed");
+
+                        drop(close_rx);
                     }
-
-                    trace!("connection {remote_addr} closed");
-
-                    drop(close_rx);
                 });
             }
 
