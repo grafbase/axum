@@ -99,6 +99,28 @@ where
     Serve {
         tcp_listener,
         make_service,
+        builder_map_fn: Box::new(std::convert::identity),
+        _marker: PhantomData,
+    }
+}
+
+/// Serve the service with the supplied listener and a closure that customises the server builder.
+#[cfg(all(feature = "tokio", any(feature = "http1", feature = "http2")))]
+pub fn serve_configured<M, S, B>(
+    tcp_listener: TcpListener,
+    make_service: M,
+    builder_map: B,
+) -> Serve<M, S>
+where
+    M: for<'a> Service<IncomingStream<'a>, Error = Infallible, Response = S>,
+    S: Service<Request, Response = Response, Error = Infallible> + Clone + Send + 'static,
+    S::Future: Send,
+    B: Fn(Builder<TokioExecutor>) -> Builder<TokioExecutor> + Send + 'static,
+{
+    Serve {
+        tcp_listener,
+        make_service,
+        builder_map_fn: Box::new(builder_map),
         _marker: PhantomData,
     }
 }
@@ -108,6 +130,7 @@ where
 pub struct Serve<M, S> {
     tcp_listener: TcpListener,
     make_service: M,
+    builder_map_fn: Box<dyn Fn(Builder<TokioExecutor>) -> Builder<TokioExecutor> + Send + 'static>,
     _marker: PhantomData<S>,
 }
 
@@ -156,6 +179,7 @@ where
         let Self {
             tcp_listener,
             make_service,
+            builder_map_fn: _,
             _marker: _,
         } = self;
 
@@ -181,10 +205,11 @@ where
         let Self {
             tcp_listener,
             make_service,
+            builder_map_fn,
             _marker: _,
         } = self;
 
-        serve(tcp_listener, make_service)
+        serve_configured(tcp_listener, make_service, builder_map_fn)
             .with_graceful_shutdown(std::future::pending())
             .into_future()
     }

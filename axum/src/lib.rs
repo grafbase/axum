@@ -469,6 +469,9 @@ pub use axum_macros::debug_handler;
 #[cfg(all(feature = "tokio", any(feature = "http1", feature = "http2")))]
 #[doc(inline)]
 pub use self::serve::serve;
+#[cfg(all(feature = "tokio", any(feature = "http1", feature = "http2")))]
+#[doc(inline)]
+pub use self::serve::serve_configured;
 
 pub use self::service_ext::ServiceExt;
 
